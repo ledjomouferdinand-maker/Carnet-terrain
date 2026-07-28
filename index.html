@@ -6,24 +6,22 @@
 <title>Carnet Terrain — Révision paramédicale</title>
 <link rel="icon" href="data:,">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { background: #101B2D; }
-  body { font-family: 'Inter', sans-serif; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
   button { font-family: inherit; cursor: pointer; }
   #root { min-height: 100vh; }
   .ct-scroll::-webkit-scrollbar { display: none; }
+  .ct-serif { font-family: Georgia, 'Times New Roman', serif; }
+  .ct-mono { font-family: 'Courier New', monospace; }
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root">
+  <div style="color:#8FA0BC;padding:40px 20px;font-size:14px;">Chargement…</div>
+</div>
 
-<!-- ============================================================
-     1) CONFIGURATION FIREBASE — À REMPLIR AVANT DE DÉPLOYER
-     Va sur https://console.firebase.google.com, crée un projet
-     gratuit, active "Firestore Database" (mode test), puis
-     copie ta config ici (Paramètres du projet > Général > Config SDK).
-     ============================================================ -->
+<!-- CONFIGURATION FIREBASE -->
 <script>
   window.FIREBASE_CONFIG = {
     apiKey: "AIzaSyBFIgGrdj7PdMLeKdAqqlc11494ErY2CPs",
@@ -34,500 +32,481 @@
     appId: "1:53002136827:web:f186ee68ac4b2eb29e945e",
     measurementId: "G-D9PJYXCYRS"
   };
-
   // Code d'accès formateur — change cette valeur avant de déployer
   window.ADMIN_CODE = "kael2026";
 </script>
 
-<!-- 2) Firebase (compat SDK — simple, pas de build nécessaire) -->
+<!-- Firebase (compat SDK) -->
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <script>
   (function () {
-    var configured = window.FIREBASE_CONFIG.apiKey !== "COLLE_TA_CLE_ICI";
+    var configured = window.FIREBASE_CONFIG.apiKey && window.FIREBASE_CONFIG.apiKey.indexOf("COLLE_TA_CLE") === -1;
     window.CT_CLOUD_READY = false;
-    if (configured) {
+    if (configured && window.firebase) {
       try {
         firebase.initializeApp(window.FIREBASE_CONFIG);
         window.CT_DB = firebase.firestore();
         window.CT_CLOUD_READY = true;
-      } catch (e) {
-        console.error("Erreur d'initialisation Firebase :", e);
-      }
+      } catch (e) { console.error("Erreur Firebase:", e); }
     }
-
     window.cloudStorage = {
-      async saveSession(id, data) {
-        if (!window.CT_CLOUD_READY) throw new Error("Firebase non configuré");
-        await window.CT_DB.collection("carnet_terrain_scores").doc(id).set(data, { merge: true });
+      saveSession: function (id, data) {
+        if (!window.CT_CLOUD_READY) return Promise.reject(new Error("Firebase non prêt"));
+        return window.CT_DB.collection("carnet_terrain_scores").doc(id).set(data, { merge: true });
       },
-      async listSessions() {
-        if (!window.CT_CLOUD_READY) throw new Error("Firebase non configuré");
-        const snap = await window.CT_DB.collection("carnet_terrain_scores").get();
-        return snap.docs.map((d) => d.data());
-      },
+      listSessions: function () {
+        if (!window.CT_CLOUD_READY) return Promise.reject(new Error("Firebase non prêt"));
+        return window.CT_DB.collection("carnet_terrain_scores").get().then(function (snap) {
+          return snap.docs.map(function (d) { return d.data(); });
+        });
+      }
     };
   })();
 </script>
 
-<!-- 3) React (via CDN, sans étape de build) -->
+<!-- React (production, sans Babel) -->
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
 
-<script type="text/babel" data-presets="react">
-const { useState, useMemo, useCallback, useEffect } = React;
+<script>
+(function () {
+  var useState = React.useState, useEffect = React.useEffect, useMemo = React.useMemo, useCallback = React.useCallback;
+  var h = React.createElement;
 
-/* ---------------------------------------------------------
-   CARNET TERRAIN — outil de révision paramédical
-   QCM + Cas cliniques + Fiches mémo, thèmes mixtes
---------------------------------------------------------- */
-
-const THEMES = {
-  urgences: { label: "Urgences", color: "#C1443C" },
-  soins: { label: "Soins infirmiers", color: "#3E6B8A" },
-  paludisme: { label: "Paludisme", color: "#4F7A5B" },
-  drepano: { label: "Drépanocytose", color: "#8A5CA8" },
-  contraception: { label: "Contraception", color: "#B8863B" },
-};
-
-const DATA = [
-  { id: 1, type: "qcm", theme: "urgences",
-    q: "Devant un arrêt cardio-respiratoire chez l'adulte, quelle est la fréquence recommandée des compressions thoraciques ?",
-    options: ["60 à 80/min", "100 à 120/min", "140 à 160/min", "40 à 60/min"], answer: 1,
-    explanation: "Les recommandations internationales fixent le rythme des compressions entre 100 et 120 par minute, avec une profondeur de 5 à 6 cm chez l'adulte." },
-  { id: 2, type: "fiche", theme: "soins",
-    front: "Les 5 bons de l'administration médicamenteuse",
-    back: "Bon patient · Bon médicament · Bonne dose · Bonne voie · Bonne heure. Certains ajoutent un 6e bon : la bonne traçabilité (documentation)." },
-  { id: 3, type: "cas", theme: "paludisme",
-    stem: "Un enfant de 4 ans est amené au centre de santé pour fièvre à 39,5°C évoluant depuis 2 jours, avec vomissements et prostration. La TDR palu revient positive.",
-    q: "Quel signe, s'il est présent chez cet enfant, imposerait une orientation immédiate vers un paludisme grave ?",
-    options: ["Fièvre isolée", "Troubles de la conscience", "Toux sèche", "Perte d'appétit modérée"], answer: 1,
-    explanation: "Les troubles de la conscience (obnubilation, convulsions, coma) font partie des critères OMS de paludisme grave et imposent une prise en charge hospitalière urgente en parentéral." },
-  { id: 4, type: "fiche", theme: "drepano",
-    front: "Crise vaso-occlusive (CVO) — définition",
-    back: "Occlusion de la microcirculation par des hématies falciformes, provoquant une ischémie tissulaire douloureuse. Facteurs déclenchants : froid, déshydratation, infection, effort, hypoxie, stress." },
-  { id: 5, type: "qcm", theme: "drepano",
-    q: "Quelle est la première mesure thérapeutique devant une CVO aux urgences ?",
-    options: ["Transfusion systématique", "Hyperhydratation et antalgie précoce", "Antibiothérapie systématique", "Mise à jeun strict"], answer: 1,
-    explanation: "L'hyperhydratation (orale ou IV) et une antalgie précoce et adaptée à l'intensité de la douleur sont les piliers immédiats de la prise en charge d'une CVO." },
-  { id: 6, type: "cas", theme: "contraception",
-    stem: "Une patiente de 28 ans, nullipare, sans antécédent notable, souhaite débuter une contraception orale combinée.",
-    q: "Quel antécédent contre-indiquerait formellement cette méthode ?",
-    options: ["Cycles irréguliers", "Antécédent de thrombose veineuse", "Nulliparité", "Âge de 28 ans"], answer: 1,
-    explanation: "Un antécédent de thrombose veineuse est une contre-indication absolue aux œstroprogestatifs en raison du risque thromboembolique." },
-  { id: 7, type: "fiche", theme: "urgences",
-    front: "Score de Glasgow — composantes",
-    back: "Ouverture des yeux (4) + Réponse verbale (5) + Réponse motrice (6) = /15. Un score ≤ 8 signe un coma et impose la protection des voies aériennes." },
-  { id: 8, type: "qcm", theme: "soins",
-    q: "Avant toute injection intramusculaire, quel geste est indispensable pour éviter une injection intravasculaire accidentelle ?",
-    options: ["Masser le point d'injection", "Aspirer avant d'injecter", "Injecter très lentement uniquement", "Réchauffer le produit"], answer: 1,
-    explanation: "L'aspiration préalable permet de vérifier l'absence de reflux sanguin, signe que l'aiguille n'est pas dans un vaisseau." },
-  { id: 9, type: "fiche", theme: "paludisme",
-    front: "Traitement de 1ère ligne du paludisme simple (OMS)",
-    back: "Combinaison thérapeutique à base d'artémisinine (CTA), ex. Artéméther-Luméfantrine, sur 3 jours. Le paludisme grave nécessite un traitement parentéral (artésunate IV)." },
-  { id: 10, type: "qcm", theme: "urgences",
-    q: "Chez un patient en détresse respiratoire aiguë, quelle est la priorité immédiate ?",
-    options: ["Prise de la température", "Libération et contrôle des voies aériennes", "Pose d'une sonde urinaire", "Interrogatoire complet"], answer: 1,
-    explanation: "La règle ABC (Airway, Breathing, Circulation) place la liberté des voies aériennes en toute première priorité." },
-  { id: 11, type: "cas", theme: "soins",
-    stem: "Un patient hospitalisé reçoit une prescription de perfusion à passer sur 6 heures, volume total 1000 ml, avec un perfuseur délivrant 20 gouttes/ml.",
-    q: "Quel est le débit approximatif en gouttes par minute ?",
-    options: ["Environ 56 gttes/min", "Environ 28 gttes/min", "Environ 14 gttes/min", "Environ 100 gttes/min"], answer: 0,
-    explanation: "Débit (gttes/min) = (Volume × nb gouttes/ml) / durée en minutes = (1000 × 20) / 360 ≈ 55,6, arrondi à environ 56 gouttes/minute." },
-  { id: 12, type: "fiche", theme: "contraception",
-    front: "Méthodes de longue durée d'action (LARC)",
-    back: "DIU au cuivre (jusqu'à 10 ans), DIU hormonal, implant sous-cutané (3 à 5 ans). Réversibles, très efficaces, indépendantes de l'observance quotidienne." },
-  { id: 13, type: "qcm", theme: "drepano",
-    q: "Quel examen biologique confirme le diagnostic de drépanocytose ?",
-    options: ["NFS seule", "Électrophorèse de l'hémoglobine", "Groupage sanguin", "CRP"], answer: 1,
-    explanation: "L'électrophorèse de l'hémoglobine met en évidence l'hémoglobine S et permet de distinguer trait drépanocytaire et forme homozygote." },
-  { id: 14, type: "fiche", theme: "urgences",
-    front: "Position latérale de sécurité (PLS) — indication",
-    back: "Patient inconscient qui respire normalement, sans traumatisme suspecté. Objectif : libérer les voies aériennes et prévenir l'inhalation en cas de vomissement." },
-  { id: 15, type: "cas", theme: "paludisme",
-    stem: "Une femme enceinte au 2e trimestre présente une fièvre avec TDR palu positif, sans signe de gravité.",
-    q: "Quel antipaludique est contre-indiqué chez la femme enceinte au 1er trimestre mais utilisable plus tard ?",
-    options: ["Artéméther-Luméfantrine", "Paracétamol", "Sulfadoxine-pyriméthamine seule", "Aucun n'est jamais utilisable"], answer: 0,
-    explanation: "Les CTA comme l'Artéméther-Luméfantrine sont évitées au 1er trimestre par prudence (données limitées) mais recommandées dès le 2e trimestre selon les protocoles nationaux." },
-  { id: 16, type: "qcm", theme: "soins",
-    q: "Quelle est la définition de l'asepsie ?",
-    options: ["Élimination totale de tout micro-organisme", "Ensemble de mesures pour empêcher l'introduction de micro-organismes", "Destruction des germes pathogènes uniquement", "Nettoyage simple à l'eau"], answer: 1,
-    explanation: "L'asepsie regroupe les méthodes préventives visant à empêcher toute contamination microbienne d'un milieu, contrairement à l'antisepsie qui traite un milieu déjà contaminé." },
-];
-
-const TABS = [
-  { key: "tous", label: "Tous" },
-  { key: "qcm", label: "QCM" },
-  { key: "cas", label: "Cas" },
-  { key: "fiche", label: "Fiches" },
-];
-
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function CarnetTerrain() {
-  const [view, setView] = useState("entry"); // entry | quiz | admin-gate | admin
-  const [name, setName] = useState("");
-  const [nameDraft, setNameDraft] = useState("");
-  const [saveError, setSaveError] = useState(false);
-  const [codeDraft, setCodeDraft] = useState("");
-  const [codeError, setCodeError] = useState(false);
-
-  const [tab, setTab] = useState("tous");
-  const [themeFilter, setThemeFilter] = useState("tous");
-  const [order, setOrder] = useState(() => shuffle(DATA.map((d) => d.id)));
-  const [pos, setPos] = useState(0);
-  const [selected, setSelected] = useState(null);
-  const [flipped, setFlipped] = useState(false);
-  const [score, setScore] = useState({ correct: 0, seen: 0 });
-
-  useEffect(() => {
-    if (view !== "quiz" || !name || score.seen === 0) return;
-    const id = name.trim().toLowerCase();
-    const payload = { name: name.trim(), correct: score.correct, seen: score.seen, updatedAt: new Date().toISOString() };
-    window.cloudStorage.saveSession(id, payload).catch(() => setSaveError(true));
-  }, [score, view, name]);
-
-  const filtered = useMemo(() => {
-    return order
-      .map((id) => DATA.find((d) => d.id === id))
-      .filter((d) => (tab === "tous" ? true : d.type === tab))
-      .filter((d) => (themeFilter === "tous" ? true : d.theme === themeFilter));
-  }, [order, tab, themeFilter]);
-
-  const current = filtered[pos % Math.max(filtered.length, 1)];
-
-  const goNext = useCallback(() => {
-    setSelected(null); setFlipped(false);
-    setPos((p) => (filtered.length ? (p + 1) % filtered.length : 0));
-  }, [filtered.length]);
-
-  const goPrev = useCallback(() => {
-    setSelected(null); setFlipped(false);
-    setPos((p) => (filtered.length ? (p - 1 + filtered.length) % filtered.length : 0));
-  }, [filtered.length]);
-
-  const reshuffle = () => {
-    setOrder(shuffle(DATA.map((d) => d.id)));
-    setPos(0); setSelected(null); setFlipped(false);
-    setScore({ correct: 0, seen: 0 });
+  var THEMES = {
+    urgences: { label: "Urgences", color: "#C1443C" },
+    soins: { label: "Soins infirmiers", color: "#3E6B8A" },
+    paludisme: { label: "Paludisme", color: "#4F7A5B" },
+    drepano: { label: "Drépanocytose", color: "#8A5CA8" },
+    contraception: { label: "Contraception", color: "#B8863B" }
   };
 
-  const pick = (idx) => {
-    if (selected !== null) return;
-    setSelected(idx);
-    setScore((s) => ({ correct: s.correct + (idx === current.answer ? 1 : 0), seen: s.seen + 1 }));
+  var DATA = [
+    { id: 1, type: "qcm", theme: "urgences",
+      q: "Devant un arrêt cardio-respiratoire chez l'adulte, quelle est la fréquence recommandée des compressions thoraciques ?",
+      options: ["60 à 80/min", "100 à 120/min", "140 à 160/min", "40 à 60/min"], answer: 1,
+      explanation: "Les recommandations internationales fixent le rythme des compressions entre 100 et 120 par minute, avec une profondeur de 5 à 6 cm chez l'adulte." },
+    { id: 2, type: "fiche", theme: "soins",
+      front: "Les 5 bons de l'administration médicamenteuse",
+      back: "Bon patient · Bon médicament · Bonne dose · Bonne voie · Bonne heure. Certains ajoutent un 6e bon : la bonne traçabilité (documentation)." },
+    { id: 3, type: "cas", theme: "paludisme",
+      stem: "Un enfant de 4 ans est amené au centre de santé pour fièvre à 39,5°C évoluant depuis 2 jours, avec vomissements et prostration. La TDR palu revient positive.",
+      q: "Quel signe, s'il est présent chez cet enfant, imposerait une orientation immédiate vers un paludisme grave ?",
+      options: ["Fièvre isolée", "Troubles de la conscience", "Toux sèche", "Perte d'appétit modérée"], answer: 1,
+      explanation: "Les troubles de la conscience (obnubilation, convulsions, coma) font partie des critères OMS de paludisme grave et imposent une prise en charge hospitalière urgente en parentéral." },
+    { id: 4, type: "fiche", theme: "drepano",
+      front: "Crise vaso-occlusive (CVO) — définition",
+      back: "Occlusion de la microcirculation par des hématies falciformes, provoquant une ischémie tissulaire douloureuse. Facteurs déclenchants : froid, déshydratation, infection, effort, hypoxie, stress." },
+    { id: 5, type: "qcm", theme: "drepano",
+      q: "Quelle est la première mesure thérapeutique devant une CVO aux urgences ?",
+      options: ["Transfusion systématique", "Hyperhydratation et antalgie précoce", "Antibiothérapie systématique", "Mise à jeun strict"], answer: 1,
+      explanation: "L'hyperhydratation (orale ou IV) et une antalgie précoce et adaptée à l'intensité de la douleur sont les piliers immédiats de la prise en charge d'une CVO." },
+    { id: 6, type: "cas", theme: "contraception",
+      stem: "Une patiente de 28 ans, nullipare, sans antécédent notable, souhaite débuter une contraception orale combinée.",
+      q: "Quel antécédent contre-indiquerait formellement cette méthode ?",
+      options: ["Cycles irréguliers", "Antécédent de thrombose veineuse", "Nulliparité", "Âge de 28 ans"], answer: 1,
+      explanation: "Un antécédent de thrombose veineuse est une contre-indication absolue aux œstroprogestatifs en raison du risque thromboembolique." },
+    { id: 7, type: "fiche", theme: "urgences",
+      front: "Score de Glasgow — composantes",
+      back: "Ouverture des yeux (4) + Réponse verbale (5) + Réponse motrice (6) = /15. Un score ≤ 8 signe un coma et impose la protection des voies aériennes." },
+    { id: 8, type: "qcm", theme: "soins",
+      q: "Avant toute injection intramusculaire, quel geste est indispensable pour éviter une injection intravasculaire accidentelle ?",
+      options: ["Masser le point d'injection", "Aspirer avant d'injecter", "Injecter très lentement uniquement", "Réchauffer le produit"], answer: 1,
+      explanation: "L'aspiration préalable permet de vérifier l'absence de reflux sanguin, signe que l'aiguille n'est pas dans un vaisseau." },
+    { id: 9, type: "fiche", theme: "paludisme",
+      front: "Traitement de 1ère ligne du paludisme simple (OMS)",
+      back: "Combinaison thérapeutique à base d'artémisinine (CTA), ex. Artéméther-Luméfantrine, sur 3 jours. Le paludisme grave nécessite un traitement parentéral (artésunate IV)." },
+    { id: 10, type: "qcm", theme: "urgences",
+      q: "Chez un patient en détresse respiratoire aiguë, quelle est la priorité immédiate ?",
+      options: ["Prise de la température", "Libération et contrôle des voies aériennes", "Pose d'une sonde urinaire", "Interrogatoire complet"], answer: 1,
+      explanation: "La règle ABC (Airway, Breathing, Circulation) place la liberté des voies aériennes en toute première priorité." },
+    { id: 11, type: "cas", theme: "soins",
+      stem: "Un patient hospitalisé reçoit une prescription de perfusion à passer sur 6 heures, volume total 1000 ml, avec un perfuseur délivrant 20 gouttes/ml.",
+      q: "Quel est le débit approximatif en gouttes par minute ?",
+      options: ["Environ 56 gttes/min", "Environ 28 gttes/min", "Environ 14 gttes/min", "Environ 100 gttes/min"], answer: 0,
+      explanation: "Débit (gttes/min) = (Volume × nb gouttes/ml) / durée en minutes = (1000 × 20) / 360 ≈ 55,6, arrondi à environ 56 gouttes/minute." },
+    { id: 12, type: "fiche", theme: "contraception",
+      front: "Méthodes de longue durée d'action (LARC)",
+      back: "DIU au cuivre (jusqu'à 10 ans), DIU hormonal, implant sous-cutané (3 à 5 ans). Réversibles, très efficaces, indépendantes de l'observance quotidienne." },
+    { id: 13, type: "qcm", theme: "drepano",
+      q: "Quel examen biologique confirme le diagnostic de drépanocytose ?",
+      options: ["NFS seule", "Électrophorèse de l'hémoglobine", "Groupage sanguin", "CRP"], answer: 1,
+      explanation: "L'électrophorèse de l'hémoglobine met en évidence l'hémoglobine S et permet de distinguer trait drépanocytaire et forme homozygote." },
+    { id: 14, type: "fiche", theme: "urgences",
+      front: "Position latérale de sécurité (PLS) — indication",
+      back: "Patient inconscient qui respire normalement, sans traumatisme suspecté. Objectif : libérer les voies aériennes et prévenir l'inhalation en cas de vomissement." },
+    { id: 15, type: "cas", theme: "paludisme",
+      stem: "Une femme enceinte au 2e trimestre présente une fièvre avec TDR palu positif, sans signe de gravité.",
+      q: "Quel antipaludique est contre-indiqué chez la femme enceinte au 1er trimestre mais utilisable plus tard ?",
+      options: ["Artéméther-Luméfantrine", "Paracétamol", "Sulfadoxine-pyriméthamine seule", "Aucun n'est jamais utilisable"], answer: 0,
+      explanation: "Les CTA comme l'Artéméther-Luméfantrine sont évitées au 1er trimestre par prudence (données limitées) mais recommandées dès le 2e trimestre selon les protocoles nationaux." },
+    { id: 16, type: "qcm", theme: "soins",
+      q: "Quelle est la définition de l'asepsie ?",
+      options: ["Élimination totale de tout micro-organisme", "Ensemble de mesures pour empêcher l'introduction de micro-organismes", "Destruction des germes pathogènes uniquement", "Nettoyage simple à l'eau"], answer: 1,
+      explanation: "L'asepsie regroupe les méthodes préventives visant à empêcher toute contamination microbienne d'un milieu, contrairement à l'antisepsie qui traite un milieu déjà contaminé." }
+  ];
+
+  var TABS = [
+    { key: "tous", label: "Tous" },
+    { key: "qcm", label: "QCM" },
+    { key: "cas", label: "Cas" },
+    { key: "fiche", label: "Fiches" }
+  ];
+
+  function shuffle(arr) {
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+    }
+    return a;
+  }
+
+  var styles = {
+    page: { minHeight: "100vh", background: "#101B2D", display: "flex", flexDirection: "column", paddingBottom: "24px" },
+    header: { padding: "28px 20px 16px", color: "#F6F1E4" },
+    headerTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-end" },
+    eyebrow: { fontSize: "11px", letterSpacing: "0.18em", color: "#D4A24C", marginBottom: "2px", fontWeight: 600 },
+    title: { fontSize: "34px", fontWeight: 700, margin: 0, color: "#F6F1E4" },
+    scoreBox: { textAlign: "right" },
+    scoreNum: { fontSize: "20px", color: "#D4A24C", fontWeight: 600 },
+    scoreLabel: { fontSize: "11px", color: "#8FA0BC", letterSpacing: "0.05em" },
+    tagline: { marginTop: "8px", fontSize: "13px", color: "#8FA0BC" },
+    tabRow: { display: "flex", gap: "8px", padding: "0 20px 12px", overflowX: "auto" },
+    tabBtn: { flexShrink: 0, padding: "8px 16px", borderRadius: "999px", border: "1px solid #2A3B58", background: "transparent", color: "#8FA0BC", fontSize: "13px", fontWeight: 500 },
+    tabBtnActive: { background: "#F6F1E4", color: "#1B2A4A", border: "1px solid #F6F1E4" },
+    themeRow: { display: "flex", gap: "8px", padding: "0 20px 20px", overflowX: "auto" },
+    themeChip: { flexShrink: 0, padding: "6px 14px", borderRadius: "8px", border: "1px solid", fontSize: "12px", fontWeight: 500 },
+    main: { flex: 1, padding: "0 16px" },
+    card: { background: "#F6F1E4", borderRadius: "14px", overflow: "hidden", boxShadow: "0 12px 32px rgba(0,0,0,0.28)", maxWidth: "480px", margin: "0 auto" },
+    cardTab: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 18px" },
+    cardTabLabel: { color: "#fff", fontSize: "12px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" },
+    cardTabIndex: { color: "rgba(255,255,255,0.85)", fontSize: "12px" },
+    cardBody: { padding: "22px 20px 26px" },
+    flashZone: { minHeight: "180px", display: "flex", flexDirection: "column", justifyContent: "center", cursor: "pointer" },
+    flashKicker: { fontSize: "11px", color: "#8A7F6A", letterSpacing: "0.08em", marginBottom: "14px" },
+    flashText: { fontSize: "21px", lineHeight: 1.4, color: "#1B2A4A", margin: 0 },
+    flashHint: { marginTop: "18px", fontSize: "12px", color: "#B8863B", fontWeight: 500 },
+    stem: { fontSize: "14px", lineHeight: 1.55, color: "#5C5140", fontStyle: "italic", marginBottom: "14px", paddingLeft: "12px", borderLeft: "3px solid #D4A24C" },
+    question: { fontSize: "18px", fontWeight: 700, lineHeight: 1.4, color: "#1B2A4A", marginTop: 0, marginBottom: "16px" },
+    options: { display: "flex", flexDirection: "column", gap: "9px" },
+    option: { display: "flex", alignItems: "center", gap: "10px", textAlign: "left", padding: "12px 14px", borderRadius: "9px", border: "1.5px solid", fontSize: "14px", lineHeight: 1.4, width: "100%" },
+    optionLetter: { fontSize: "12px", fontWeight: 600, width: "20px", flexShrink: 0, opacity: 0.6 },
+    explanation: { marginTop: "16px", paddingTop: "14px", borderTop: "1px dashed #DDD3BC" },
+    explanationLabel: { fontSize: "12px", fontWeight: 600, color: "#1B2A4A", marginBottom: "6px" },
+    explanationText: { fontSize: "13.5px", lineHeight: 1.55, color: "#4A4436", margin: 0 },
+    footer: { display: "flex", alignItems: "center", justifyContent: "center", gap: "14px", marginTop: "22px", padding: "0 20px" },
+    navBtn: { width: "46px", height: "46px", borderRadius: "50%", border: "1px solid #2A3B58", background: "#16233A", color: "#F6F1E4", fontSize: "20px" },
+    shuffleBtn: { padding: "12px 20px", borderRadius: "999px", border: "1px solid #D4A24C", background: "transparent", color: "#D4A24C", fontSize: "13px", fontWeight: 600 },
+    primaryBtn: { marginTop: "12px", padding: "10px 18px", borderRadius: "8px", border: "none", background: "#1B2A4A", color: "#F6F1E4", fontSize: "13px", fontWeight: 600, width: "100%" },
+    empty: { textAlign: "center", padding: "60px 20px", color: "#F6F1E4" },
+    emptyText: { color: "#8FA0BC", fontSize: "14px" },
+    headerRow2: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" },
+    adminMini: { fontSize: "11px", color: "#D4A24C", background: "transparent", border: "1px solid #3A4E70", borderRadius: "999px", padding: "5px 10px" },
+    saveError: { marginTop: "8px", fontSize: "11px", color: "#E08A82" },
+    entryWrap: { maxWidth: "420px", margin: "0 auto", padding: "60px 24px", color: "#F6F1E4" },
+    entryCard: { marginTop: "28px", background: "#F6F1E4", borderRadius: "14px", padding: "22px" },
+    entryLabel: { display: "block", fontSize: "11px", letterSpacing: "0.06em", color: "#8A7F6A", marginBottom: "8px" },
+    entryInput: { width: "100%", padding: "12px 14px", borderRadius: "9px", border: "1.5px solid #DDD3BC", fontSize: "15px", color: "#1B2A4A", marginBottom: "14px", background: "#FBF8F1" },
+    entryHint: { marginTop: "14px", fontSize: "12px", color: "#8A7F6A", lineHeight: 1.5 },
+    adminLink: { display: "block", marginTop: "16px", background: "transparent", border: "none", color: "#3E6B8A", fontSize: "12px", textDecoration: "underline", padding: 0 },
+    codeError: { marginTop: "-8px", marginBottom: "12px", fontSize: "12px", color: "#C1443C" },
+    adminWrap: { maxWidth: "480px", margin: "0 auto", padding: "28px 20px 60px", color: "#F6F1E4" },
+    adminHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" },
+    adminTitle: { fontSize: "24px", fontWeight: 700, margin: "2px 0 0", color: "#F6F1E4" },
+    smallBtn: { padding: "7px 14px", borderRadius: "999px", border: "1px solid #3A4E70", background: "transparent", color: "#F6F1E4", fontSize: "12px" },
+    refreshBtn: { marginBottom: "16px", padding: "8px 16px", borderRadius: "999px", border: "1px solid #D4A24C", background: "transparent", color: "#D4A24C", fontSize: "12px", fontWeight: 600 },
+    adminMuted: { color: "#8FA0BC", fontSize: "13px" },
+    adminTable: { background: "#F6F1E4", borderRadius: "12px", overflow: "hidden" },
+    adminRow: { display: "flex", alignItems: "center", gap: "12px", padding: "12px 16px", borderBottom: "1px solid #E8E0CE" },
+    adminRank: { fontSize: "12px", color: "#B8863B", width: "18px" },
+    adminName: { flex: 1, fontSize: "14px", fontWeight: 600, color: "#1B2A4A" },
+    adminScore: { fontSize: "13px", color: "#1B2A4A" },
+    adminPct: { color: "#8A7F6A" },
+    adminNote: { marginTop: "18px", fontSize: "11px", lineHeight: 1.5, color: "#6E7FA0" }
   };
 
-  const changeTab = (key) => { setTab(key); setPos(0); setSelected(null); setFlipped(false); };
-  const changeTheme = (key) => { setThemeFilter(key); setPos(0); setSelected(null); setFlipped(false); };
+  function QuizFace(props) {
+    var item = props.item, selected = props.selected, onPick = props.onPick;
+    var answered = selected !== null;
+    var children = [];
+    if (item.stem) children.push(h('p', { style: styles.stem, key: 'stem' }, item.stem));
+    children.push(h('p', { style: styles.question, key: 'q' }, item.q));
+    children.push(h('div', { style: styles.options, key: 'opts' }, item.options.map(function (opt, idx) {
+      var bg = "#FBF8F1", border = "#DDD3BC", color = "#1B2A4A";
+      if (answered) {
+        if (idx === item.answer) { bg = "#E7F0E8"; border = "#4F7A5B"; color = "#2C4A34"; }
+        else if (idx === selected) { bg = "#F6E5E3"; border = "#C1443C"; color = "#7A2E27"; }
+      }
+      return h('button', {
+        key: idx, onClick: function () { onPick(idx); }, disabled: answered,
+        style: Object.assign({}, styles.option, { background: bg, borderColor: border, color: color, cursor: answered ? "default" : "pointer" })
+      }, h('span', { style: styles.optionLetter }, String.fromCharCode(65 + idx)), opt);
+    })));
+    if (answered) {
+      children.push(h('div', { style: styles.explanation, key: 'exp' },
+        h('div', { style: styles.explanationLabel }, selected === item.answer ? "✓ Correct" : "✗ À revoir"),
+        h('p', { style: styles.explanationText }, item.explanation)
+      ));
+    }
+    return h('div', null, children);
+  }
 
-  const fontStyle = null;
-
-  if (view === "entry") {
-    return (
-      <div style={styles.page}>
-        <div style={styles.entryWrap}>
-          <div style={styles.eyebrow}>CARNET</div>
-          <h1 style={styles.title}>Terrain</h1>
-          <p style={styles.tagline}>Révision paramédicale — cours & terrain</p>
-          <div style={styles.entryCard}>
-            <label style={styles.entryLabel}>Ton prénom (ou pseudo)</label>
-            <input style={styles.entryInput} value={nameDraft} onChange={(e) => setNameDraft(e.target.value)}
-              placeholder="ex. Awa, Junior…" maxLength={30} />
-            <button style={styles.primaryBtn} disabled={!nameDraft.trim()}
-              onClick={() => { setName(nameDraft.trim()); setView("quiz"); }}>
-              Commencer
-            </button>
-            <p style={styles.entryHint}>Ton prénom permet au formateur de voir ta progression. Aucune autre donnée n'est demandée.</p>
-            <button style={styles.adminLink} onClick={() => setView("admin-gate")}>Je suis formateur → voir les scores</button>
-          </div>
-        </div>
-      </div>
+  function FlashcardFace(props) {
+    var item = props.item, flipped = props.flipped, onFlip = props.onFlip;
+    return h('div', { onClick: onFlip, style: styles.flashZone },
+      h('div', { style: styles.flashKicker }, flipped ? "RÉPONSE" : "FICHE MÉMO — touchez pour retourner"),
+      h('p', { style: styles.flashText }, flipped ? item.back : item.front),
+      h('div', { style: styles.flashHint }, flipped ? "↺ retourner" : "→ voir la réponse")
     );
   }
 
-  if (view === "admin-gate") {
-    return (
-      <div style={styles.page}>
-        <div style={styles.entryWrap}>
-          <div style={styles.eyebrow}>ACCÈS RÉSERVÉ</div>
-          <h1 style={styles.title}>Formateur</h1>
-          <p style={styles.tagline}>Entre le code pour voir les scores</p>
-          <div style={styles.entryCard}>
-            <label style={styles.entryLabel}>Code d'accès</label>
-            <input style={styles.entryInput} type="password" value={codeDraft}
-              onChange={(e) => { setCodeDraft(e.target.value); setCodeError(false); }}
-              placeholder="••••••"
-              onKeyDown={(e) => { if (e.key === "Enter") { if (codeDraft === window.ADMIN_CODE) setView("admin"); else setCodeError(true); } }} />
-            {codeError && <p style={styles.codeError}>Code incorrect.</p>}
-            <button style={styles.primaryBtn} disabled={!codeDraft}
-              onClick={() => { if (codeDraft === window.ADMIN_CODE) setView("admin"); else setCodeError(true); }}>
-              Valider
-            </button>
-            <button style={styles.adminLink} onClick={() => { setCodeDraft(""); setCodeError(false); setView(name ? "quiz" : "entry"); }}>← Retour</button>
-          </div>
-        </div>
-      </div>
+  function Card(props) {
+    var item = props.item, theme = props.theme, index = props.index, total = props.total,
+        selected = props.selected, flipped = props.flipped, onFlip = props.onFlip, onPick = props.onPick;
+    return h('div', { style: styles.card },
+      h('div', { style: Object.assign({}, styles.cardTab, { background: theme.color }) },
+        h('span', { style: styles.cardTabLabel }, theme.label),
+        h('span', { style: styles.cardTabIndex }, index + '/' + total)
+      ),
+      h('div', { style: styles.cardBody },
+        item.type === "fiche"
+          ? h(FlashcardFace, { item: item, flipped: flipped, onFlip: onFlip })
+          : h(QuizFace, { item: item, selected: selected, onPick: onPick })
+      )
     );
   }
 
-  if (view === "admin") {
-    return (
-      <div style={styles.page}>
-        <AdminView onBack={() => setView(name ? "quiz" : "entry")} />
-      </div>
+  function AdminView(props) {
+    var onBack = props.onBack;
+    var s = useState([]); var rows = s[0], setRows = s[1];
+    var s2 = useState(true); var loading = s2[0], setLoading = s2[1];
+    var s3 = useState(false); var error = s3[0], setError = s3[1];
+
+    var load = useCallback(function () {
+      setLoading(true); setError(false);
+      window.cloudStorage.listSessions().then(function (results) {
+        var clean = results.filter(Boolean).sort(function (a, b) { return (b.correct / b.seen) - (a.correct / a.seen); });
+        setRows(clean);
+      }).catch(function () { setError(true); }).finally(function () { setLoading(false); });
+    }, []);
+
+    useEffect(function () { load(); }, [load]);
+
+    var children = [
+      h('div', { style: styles.adminHeader, key: 'hdr' },
+        h('div', null,
+          h('div', { style: styles.eyebrow }, 'VUE FORMATEUR'),
+          h('h2', { style: styles.adminTitle }, 'Scores des répondants')
+        ),
+        h('button', { style: styles.smallBtn, onClick: onBack }, 'Retour')
+      ),
+      h('button', { style: styles.refreshBtn, onClick: load, key: 'refresh' }, '↻ Actualiser')
+    ];
+    if (loading) children.push(h('p', { style: styles.adminMuted, key: 'loading' }, 'Chargement…'));
+    if (error) children.push(h('p', { style: styles.adminMuted, key: 'error' }, "Impossible de charger les scores. Vérifie ta configuration Firebase."));
+    if (!loading && !error && rows.length === 0) children.push(h('p', { style: styles.adminMuted, key: 'empty' }, "Aucun répondant n'a encore commencé."));
+    if (!loading && rows.length > 0) {
+      children.push(h('div', { style: styles.adminTable, key: 'table' }, rows.map(function (r, i) {
+        var pct = Math.round((r.correct / r.seen) * 100);
+        return h('div', { style: styles.adminRow, key: i },
+          h('div', { style: styles.adminRank }, i + 1),
+          h('div', { style: styles.adminName }, r.name),
+          h('div', { style: styles.adminScore }, r.correct + '/' + r.seen, h('span', { style: styles.adminPct }, ' · ' + pct + '%'))
+        );
+      })));
+    }
+    children.push(h('p', { style: styles.adminNote, key: 'note' },
+      "Note : les scores sont stockés dans ta base Firebase. Le code d'accès protège l'affichage dans l'appli, mais si les règles Firestore sont en mode test (public), les données restent techniquement accessibles à qui saurait interroger la base directement."
+    ));
+
+    return h('div', { style: styles.adminWrap }, children);
+  }
+
+  function CarnetTerrain() {
+    var s1 = useState("entry"); var view = s1[0], setView = s1[1];
+    var s2 = useState(""); var name = s2[0], setName = s2[1];
+    var s3 = useState(""); var nameDraft = s3[0], setNameDraft = s3[1];
+    var s4 = useState(false); var saveError = s4[0], setSaveError = s4[1];
+    var s5 = useState(""); var codeDraft = s5[0], setCodeDraft = s5[1];
+    var s6 = useState(false); var codeError = s6[0], setCodeError = s6[1];
+
+    var s7 = useState("tous"); var tab = s7[0], setTab = s7[1];
+    var s8 = useState("tous"); var themeFilter = s8[0], setThemeFilter = s8[1];
+    var s9 = useState(function () { return shuffle(DATA.map(function (d) { return d.id; })); }); var order = s9[0], setOrder = s9[1];
+    var s10 = useState(0); var pos = s10[0], setPos = s10[1];
+    var s11 = useState(null); var selected = s11[0], setSelected = s11[1];
+    var s12 = useState(false); var flipped = s12[0], setFlipped = s12[1];
+    var s13 = useState({ correct: 0, seen: 0 }); var score = s13[0], setScore = s13[1];
+
+    useEffect(function () {
+      if (view !== "quiz" || !name || score.seen === 0) return;
+      var id = name.trim().toLowerCase();
+      var payload = { name: name.trim(), correct: score.correct, seen: score.seen, updatedAt: new Date().toISOString() };
+      window.cloudStorage.saveSession(id, payload).catch(function () { setSaveError(true); });
+    }, [score, view, name]);
+
+    var filtered = useMemo(function () {
+      return order.map(function (id) { return DATA.filter(function (d) { return d.id === id; })[0]; })
+        .filter(function (d) { return tab === "tous" || d.type === tab; })
+        .filter(function (d) { return themeFilter === "tous" || d.theme === themeFilter; });
+    }, [order, tab, themeFilter]);
+
+    var current = filtered.length ? filtered[pos % filtered.length] : null;
+
+    var goNext = useCallback(function () {
+      setSelected(null); setFlipped(false);
+      setPos(function (p) { return filtered.length ? (p + 1) % filtered.length : 0; });
+    }, [filtered.length]);
+
+    var goPrev = useCallback(function () {
+      setSelected(null); setFlipped(false);
+      setPos(function (p) { return filtered.length ? (p - 1 + filtered.length) % filtered.length : 0; });
+    }, [filtered.length]);
+
+    var reshuffle = function () {
+      setOrder(shuffle(DATA.map(function (d) { return d.id; })));
+      setPos(0); setSelected(null); setFlipped(false);
+      setScore({ correct: 0, seen: 0 });
+    };
+
+    var pick = function (idx) {
+      if (selected !== null) return;
+      setSelected(idx);
+      setScore(function (s) { return { correct: s.correct + (idx === current.answer ? 1 : 0), seen: s.seen + 1 }; });
+    };
+
+    var changeTab = function (key) { setTab(key); setPos(0); setSelected(null); setFlipped(false); };
+    var changeTheme = function (key) { setThemeFilter(key); setPos(0); setSelected(null); setFlipped(false); };
+
+    if (view === "entry") {
+      return h('div', { style: styles.page },
+        h('div', { style: styles.entryWrap },
+          h('div', { style: styles.eyebrow }, 'CARNET'),
+          h('h1', { style: styles.title }, 'Terrain'),
+          h('p', { style: styles.tagline }, 'Révision paramédicale — cours & terrain'),
+          h('div', { style: styles.entryCard },
+            h('label', { style: styles.entryLabel }, 'Ton prénom (ou pseudo)'),
+            h('input', {
+              style: styles.entryInput, value: nameDraft,
+              onChange: function (e) { setNameDraft(e.target.value); },
+              placeholder: 'ex. Awa, Junior…', maxLength: 30
+            }),
+            h('button', {
+              style: styles.primaryBtn, disabled: !nameDraft.trim(),
+              onClick: function () { setName(nameDraft.trim()); setView("quiz"); }
+            }, 'Commencer'),
+            h('p', { style: styles.entryHint }, "Ton prénom permet au formateur de voir ta progression. Aucune autre donnée n'est demandée."),
+            h('button', { style: styles.adminLink, onClick: function () { setView("admin-gate"); } }, 'Je suis formateur → voir les scores')
+          )
+        )
+      );
+    }
+
+    if (view === "admin-gate") {
+      var inputChildren = [
+        h('label', { style: styles.entryLabel, key: 'lbl' }, "Code d'accès"),
+        h('input', {
+          style: styles.entryInput, type: 'password', value: codeDraft, key: 'inp',
+          onChange: function (e) { setCodeDraft(e.target.value); setCodeError(false); },
+          placeholder: '••••••',
+          onKeyDown: function (e) { if (e.key === 'Enter') { if (codeDraft === window.ADMIN_CODE) setView("admin"); else setCodeError(true); } }
+        })
+      ];
+      if (codeError) inputChildren.push(h('p', { style: styles.codeError, key: 'err' }, 'Code incorrect.'));
+      inputChildren.push(h('button', {
+        style: styles.primaryBtn, disabled: !codeDraft, key: 'submit',
+        onClick: function () { if (codeDraft === window.ADMIN_CODE) setView("admin"); else setCodeError(true); }
+      }, 'Valider'));
+      inputChildren.push(h('button', {
+        style: styles.adminLink, key: 'back',
+        onClick: function () { setCodeDraft(""); setCodeError(false); setView(name ? "quiz" : "entry"); }
+      }, '← Retour'));
+
+      return h('div', { style: styles.page },
+        h('div', { style: styles.entryWrap },
+          h('div', { style: styles.eyebrow }, 'ACCÈS RÉSERVÉ'),
+          h('h1', { style: styles.title }, 'Formateur'),
+          h('p', { style: styles.tagline }, 'Entre le code pour voir les scores'),
+          h('div', { style: styles.entryCard }, inputChildren)
+        )
+      );
+    }
+
+    if (view === "admin") {
+      return h('div', { style: styles.page }, h(AdminView, { onBack: function () { setView(name ? "quiz" : "entry"); } }));
+    }
+
+    var themeChips = [h('button', {
+      key: 'tous', onClick: function () { changeTheme("tous"); },
+      style: Object.assign({}, styles.themeChip, {
+        borderColor: themeFilter === "tous" ? "#1B2A4A" : "transparent",
+        background: themeFilter === "tous" ? "#1B2A4A" : "#EFE9DA",
+        color: themeFilter === "tous" ? "#F6F1E4" : "#1B2A4A"
+      })
+    }, 'Tous thèmes')];
+    Object.keys(THEMES).forEach(function (key) {
+      var t = THEMES[key];
+      themeChips.push(h('button', {
+        key: key, onClick: function () { changeTheme(key); },
+        style: Object.assign({}, styles.themeChip, {
+          borderColor: themeFilter === key ? t.color : "transparent",
+          background: themeFilter === key ? t.color : "#EFE9DA",
+          color: themeFilter === key ? "#fff" : "#1B2A4A"
+        })
+      }, t.label));
+    });
+
+    var mainContent = !current
+      ? h('div', { style: styles.empty },
+          h('p', { style: styles.emptyText }, 'Aucune fiche pour ce filtre.'),
+          h('button', { style: styles.primaryBtn, onClick: function () { changeTheme("tous"); } }, 'Réinitialiser les filtres')
+        )
+      : h(Card, {
+          item: current, theme: THEMES[current.theme], index: pos + 1, total: filtered.length,
+          selected: selected, flipped: flipped,
+          onFlip: function () { setFlipped(function (f) { return !f; }); }, onPick: pick
+        });
+
+    var headerChildren = [
+      h('div', { style: styles.headerTop, key: 'top' },
+        h('div', null, h('div', { style: styles.eyebrow }, 'CARNET'), h('h1', { style: styles.title }, 'Terrain')),
+        h('div', { style: styles.scoreBox },
+          h('div', { style: styles.scoreNum }, score.correct + '/' + score.seen),
+          h('div', { style: styles.scoreLabel }, name)
+        )
+      ),
+      h('div', { style: styles.headerRow2, key: 'row2' },
+        h('p', { style: styles.tagline }, 'Révision paramédicale — cours & terrain'),
+        h('button', { style: styles.adminMini, onClick: function () { setView("admin-gate"); } }, '📊 Formateur')
+      )
+    ];
+    if (saveError) headerChildren.push(h('p', { style: styles.saveError, key: 'saveErr' }, 'Score non synchronisé (vérifie ta connexion ou la config Firebase).'));
+
+    var footer = current ? h('footer', { style: styles.footer },
+      h('button', { style: styles.navBtn, onClick: goPrev, 'aria-label': 'Précédent' }, '‹'),
+      h('button', { style: styles.shuffleBtn, onClick: reshuffle }, '↻ Mélanger'),
+      h('button', { style: styles.navBtn, onClick: goNext, 'aria-label': 'Suivant' }, '›')
+    ) : null;
+
+    return h('div', { style: styles.page },
+      h('header', { style: styles.header }, headerChildren),
+      h('nav', { className: 'ct-scroll', style: styles.tabRow }, TABS.map(function (t) {
+        return h('button', {
+          key: t.key, onClick: function () { changeTab(t.key); },
+          style: Object.assign({}, styles.tabBtn, tab === t.key ? styles.tabBtnActive : {})
+        }, t.label);
+      })),
+      h('div', { className: 'ct-scroll', style: styles.themeRow }, themeChips),
+      h('main', { style: styles.main }, mainContent),
+      footer
     );
   }
 
-  return (
-    <div style={styles.page}>
-      <header style={styles.header}>
-        <div style={styles.headerTop}>
-          <div>
-            <div style={styles.eyebrow}>CARNET</div>
-            <h1 style={styles.title}>Terrain</h1>
-          </div>
-          <div style={styles.scoreBox}>
-            <div style={styles.scoreNum}>{score.correct}/{score.seen}</div>
-            <div style={styles.scoreLabel}>{name}</div>
-          </div>
-        </div>
-        <div style={styles.headerRow2}>
-          <p style={styles.tagline}>Révision paramédicale — cours & terrain</p>
-          <button style={styles.adminMini} onClick={() => setView("admin-gate")}>📊 Formateur</button>
-        </div>
-        {saveError && <p style={styles.saveError}>Score non synchronisé (vérifie ta connexion ou la config Firebase).</p>}
-      </header>
-
-      <nav className="ct-scroll" style={styles.tabRow}>
-        {TABS.map((t) => (
-          <button key={t.key} onClick={() => changeTab(t.key)}
-            style={{ ...styles.tabBtn, ...(tab === t.key ? styles.tabBtnActive : {}) }}>
-            {t.label}
-          </button>
-        ))}
-      </nav>
-
-      <div className="ct-scroll" style={styles.themeRow}>
-        <button onClick={() => changeTheme("tous")}
-          style={{ ...styles.themeChip, borderColor: themeFilter === "tous" ? "#1B2A4A" : "transparent",
-            background: themeFilter === "tous" ? "#1B2A4A" : "#EFE9DA", color: themeFilter === "tous" ? "#F6F1E4" : "#1B2A4A" }}>
-          Tous thèmes
-        </button>
-        {Object.entries(THEMES).map(([key, t]) => (
-          <button key={key} onClick={() => changeTheme(key)}
-            style={{ ...styles.themeChip, borderColor: themeFilter === key ? t.color : "transparent",
-              background: themeFilter === key ? t.color : "#EFE9DA", color: themeFilter === key ? "#fff" : "#1B2A4A" }}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      <main style={styles.main}>
-        {!current ? (
-          <div style={styles.empty}>
-            <p style={styles.emptyText}>Aucune fiche pour ce filtre.</p>
-            <button style={styles.primaryBtn} onClick={() => changeTheme("tous")}>Réinitialiser les filtres</button>
-          </div>
-        ) : (
-          <Card item={current} theme={THEMES[current.theme]} index={pos + 1} total={filtered.length}
-            selected={selected} flipped={flipped} onFlip={() => setFlipped((f) => !f)} onPick={pick} />
-        )}
-      </main>
-
-      {current && (
-        <footer style={styles.footer}>
-          <button style={styles.navBtn} onClick={goPrev} aria-label="Précédent">‹</button>
-          <button style={styles.shuffleBtn} onClick={reshuffle}>↻ Mélanger</button>
-          <button style={styles.navBtn} onClick={goNext} aria-label="Suivant">›</button>
-        </footer>
-      )}
-    </div>
-  );
-}
-
-function AdminView({ onBack }) {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true); setError(false);
-    try {
-      const results = await window.cloudStorage.listSessions();
-      const clean = results.filter(Boolean).sort((a, b) => b.correct / b.seen - a.correct / a.seen);
-      setRows(clean);
-    } catch { setError(true); } finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  return (
-    <div style={styles.adminWrap}>
-      <div style={styles.adminHeader}>
-        <div>
-          <div style={styles.eyebrow}>VUE FORMATEUR</div>
-          <h2 style={styles.adminTitle}>Scores des répondants</h2>
-        </div>
-        <button style={styles.smallBtn} onClick={onBack}>Retour</button>
-      </div>
-      <button style={styles.refreshBtn} onClick={load}>↻ Actualiser</button>
-      {loading && <p style={styles.adminMuted}>Chargement…</p>}
-      {error && <p style={styles.adminMuted}>Impossible de charger les scores. Vérifie que Firebase est bien configuré (voir README).</p>}
-      {!loading && !error && rows.length === 0 && <p style={styles.adminMuted}>Aucun répondant n'a encore commencé.</p>}
-      {!loading && rows.length > 0 && (
-        <div style={styles.adminTable}>
-          {rows.map((r, i) => {
-            const pct = Math.round((r.correct / r.seen) * 100);
-            return (
-              <div key={i} style={styles.adminRow}>
-                <div style={styles.adminRank}>{i + 1}</div>
-                <div style={styles.adminName}>{r.name}</div>
-                <div style={styles.adminScore}>{r.correct}/{r.seen}<span style={styles.adminPct}> · {pct}%</span></div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      <p style={styles.adminNote}>
-        Note : les scores sont stockés dans ta base Firebase. Le code d'accès protège l'affichage dans l'appli,
-        mais si les règles Firestore sont en mode "test" (public), les données restent techniquement accessibles
-        à qui saurait interroger la base directement. Pour un usage sérieux, restreins les règles Firestore.
-      </p>
-    </div>
-  );
-}
-
-function Card({ item, theme, index, total, selected, flipped, onFlip, onPick }) {
-  return (
-    <div style={styles.card}>
-      <div style={{ ...styles.cardTab, background: theme.color }}>
-        <span style={styles.cardTabLabel}>{theme.label}</span>
-        <span style={styles.cardTabIndex}>{index}/{total}</span>
-      </div>
-      <div style={styles.cardBody}>
-        {item.type === "fiche" ? <FlashcardFace item={item} flipped={flipped} onFlip={onFlip} /> : <QuizFace item={item} selected={selected} onPick={onPick} />}
-      </div>
-    </div>
-  );
-}
-
-function FlashcardFace({ item, flipped, onFlip }) {
-  return (
-    <div onClick={onFlip} style={styles.flashZone}>
-      <div style={styles.flashKicker}>{flipped ? "RÉPONSE" : "FICHE MÉMO — touchez pour retourner"}</div>
-      <p style={styles.flashText}>{flipped ? item.back : item.front}</p>
-      <div style={styles.flashHint}>{flipped ? "↺ retourner" : "→ voir la réponse"}</div>
-    </div>
-  );
-}
-
-function QuizFace({ item, selected, onPick }) {
-  const answered = selected !== null;
-  return (
-    <div>
-      {item.stem && <p style={styles.stem}>{item.stem}</p>}
-      <p style={styles.question}>{item.q}</p>
-      <div style={styles.options}>
-        {item.options.map((opt, idx) => {
-          let bg = "#FBF8F1", border = "#DDD3BC", color = "#1B2A4A";
-          if (answered) {
-            if (idx === item.answer) { bg = "#E7F0E8"; border = "#4F7A5B"; color = "#2C4A34"; }
-            else if (idx === selected) { bg = "#F6E5E3"; border = "#C1443C"; color = "#7A2E27"; }
-          }
-          return (
-            <button key={idx} onClick={() => onPick(idx)} disabled={answered}
-              style={{ ...styles.option, background: bg, borderColor: border, color, cursor: answered ? "default" : "pointer" }}>
-              <span style={styles.optionLetter}>{String.fromCharCode(65 + idx)}</span>
-              {opt}
-            </button>
-          );
-        })}
-      </div>
-      {answered && (
-        <div style={styles.explanation}>
-          <div style={styles.explanationLabel}>{selected === item.answer ? "✓ Correct" : "✗ À revoir"}</div>
-          <p style={styles.explanationText}>{item.explanation}</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-const styles = {
-  page: { minHeight: "100vh", background: "#101B2D", fontFamily: "'Inter', sans-serif", display: "flex", flexDirection: "column", paddingBottom: "24px" },
-  header: { padding: "28px 20px 16px", color: "#F6F1E4" },
-  headerTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-end" },
-  eyebrow: { fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", letterSpacing: "0.18em", color: "#D4A24C", marginBottom: "2px" },
-  title: { fontFamily: "'Spectral', serif", fontSize: "34px", fontWeight: 600, margin: 0, color: "#F6F1E4" },
-  scoreBox: { textAlign: "right" },
-  scoreNum: { fontFamily: "'IBM Plex Mono', monospace", fontSize: "20px", color: "#D4A24C", fontWeight: 500 },
-  scoreLabel: { fontSize: "11px", color: "#8FA0BC", letterSpacing: "0.05em" },
-  tagline: { marginTop: "8px", fontSize: "13px", color: "#8FA0BC" },
-  tabRow: { display: "flex", gap: "8px", padding: "0 20px 12px", overflowX: "auto" },
-  tabBtn: { flexShrink: 0, padding: "8px 16px", borderRadius: "999px", border: "1px solid #2A3B58", background: "transparent", color: "#8FA0BC", fontSize: "13px", fontWeight: 500 },
-  tabBtnActive: { background: "#F6F1E4", color: "#1B2A4A", border: "1px solid #F6F1E4" },
-  themeRow: { display: "flex", gap: "8px", padding: "0 20px 20px", overflowX: "auto" },
-  themeChip: { flexShrink: 0, padding: "6px 14px", borderRadius: "8px", border: "1px solid", fontSize: "12px", fontWeight: 500, fontFamily: "'IBM Plex Mono', monospace" },
-  main: { flex: 1, padding: "0 16px" },
-  card: { background: "#F6F1E4", borderRadius: "14px", overflow: "hidden", boxShadow: "0 12px 32px rgba(0,0,0,0.28)", maxWidth: "480px", margin: "0 auto" },
-  cardTab: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 18px" },
-  cardTabLabel: { color: "#fff", fontSize: "12px", fontWeight: 600, letterSpacing: "0.04em", fontFamily: "'IBM Plex Mono', monospace", textTransform: "uppercase" },
-  cardTabIndex: { color: "rgba(255,255,255,0.85)", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace" },
-  cardBody: { padding: "22px 20px 26px" },
-  flashZone: { minHeight: "180px", display: "flex", flexDirection: "column", justifyContent: "center", cursor: "pointer" },
-  flashKicker: { fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", color: "#8A7F6A", letterSpacing: "0.08em", marginBottom: "14px" },
-  flashText: { fontFamily: "'Spectral', serif", fontSize: "21px", lineHeight: 1.4, color: "#1B2A4A", margin: 0 },
-  flashHint: { marginTop: "18px", fontSize: "12px", color: "#B8863B", fontWeight: 500 },
-  stem: { fontSize: "14px", lineHeight: 1.55, color: "#5C5140", fontStyle: "italic", marginBottom: "14px", paddingLeft: "12px", borderLeft: "3px solid #D4A24C" },
-  question: { fontFamily: "'Spectral', serif", fontSize: "18px", fontWeight: 600, lineHeight: 1.4, color: "#1B2A4A", marginTop: 0, marginBottom: "16px" },
-  options: { display: "flex", flexDirection: "column", gap: "9px" },
-  option: { display: "flex", alignItems: "center", gap: "10px", textAlign: "left", padding: "12px 14px", borderRadius: "9px", border: "1.5px solid", fontSize: "14px", lineHeight: 1.4 },
-  optionLetter: { fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", fontWeight: 600, width: "20px", flexShrink: 0, opacity: 0.6 },
-  explanation: { marginTop: "16px", paddingTop: "14px", borderTop: "1px dashed #DDD3BC" },
-  explanationLabel: { fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", fontWeight: 600, color: "#1B2A4A", marginBottom: "6px" },
-  explanationText: { fontSize: "13.5px", lineHeight: 1.55, color: "#4A4436", margin: 0 },
-  footer: { display: "flex", alignItems: "center", justifyContent: "center", gap: "14px", marginTop: "22px", padding: "0 20px" },
-  navBtn: { width: "46px", height: "46px", borderRadius: "50%", border: "1px solid #2A3B58", background: "#16233A", color: "#F6F1E4", fontSize: "20px" },
-  shuffleBtn: { padding: "12px 20px", borderRadius: "999px", border: "1px solid #D4A24C", background: "transparent", color: "#D4A24C", fontSize: "13px", fontWeight: 600 },
-  primaryBtn: { marginTop: "12px", padding: "10px 18px", borderRadius: "8px", border: "none", background: "#1B2A4A", color: "#F6F1E4", fontSize: "13px", fontWeight: 600, width: "100%" },
-  empty: { textAlign: "center", padding: "60px 20px", color: "#F6F1E4" },
-  emptyText: { color: "#8FA0BC", fontSize: "14px" },
-  headerRow2: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "8px" },
-  adminMini: { fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", color: "#D4A24C", background: "transparent", border: "1px solid #3A4E70", borderRadius: "999px", padding: "5px 10px" },
-  saveError: { marginTop: "8px", fontSize: "11px", color: "#E08A82" },
-  entryWrap: { maxWidth: "420px", margin: "0 auto", padding: "60px 24px", color: "#F6F1E4" },
-  entryCard: { marginTop: "28px", background: "#F6F1E4", borderRadius: "14px", padding: "22px" },
-  entryLabel: { display: "block", fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", letterSpacing: "0.06em", color: "#8A7F6A", marginBottom: "8px" },
-  entryInput: { width: "100%", padding: "12px 14px", borderRadius: "9px", border: "1.5px solid #DDD3BC", fontSize: "15px", fontFamily: "'Inter', sans-serif", color: "#1B2A4A", marginBottom: "14px", background: "#FBF8F1" },
-  entryHint: { marginTop: "14px", fontSize: "12px", color: "#8A7F6A", lineHeight: 1.5 },
-  adminLink: { display: "block", marginTop: "16px", background: "transparent", border: "none", color: "#3E6B8A", fontSize: "12px", textDecoration: "underline", padding: 0 },
-  codeError: { marginTop: "-8px", marginBottom: "12px", fontSize: "12px", color: "#C1443C" },
-  adminWrap: { maxWidth: "480px", margin: "0 auto", padding: "28px 20px 60px", color: "#F6F1E4" },
-  adminHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" },
-  adminTitle: { fontFamily: "'Spectral', serif", fontSize: "24px", fontWeight: 600, margin: "2px 0 0", color: "#F6F1E4" },
-  smallBtn: { padding: "7px 14px", borderRadius: "999px", border: "1px solid #3A4E70", background: "transparent", color: "#F6F1E4", fontSize: "12px" },
-  refreshBtn: { marginBottom: "16px", padding: "8px 16px", borderRadius: "999px", border: "1px solid #D4A24C", background: "transparent", color: "#D4A24C", fontSize: "12px", fontWeight: 600 },
-  adminMuted: { color: "#8FA0BC", fontSize: "13px" },
-  adminTable: { background: "#F6F1E4", borderRadius: "12px", overflow: "hidden" },
-  adminRow: { display: "flex", alignItems: "center", gap: "12px", padding: "12px 16px", borderBottom: "1px solid #E8E0CE" },
-  adminRank: { fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", color: "#B8863B", width: "18px" },
-  adminName: { flex: 1, fontSize: "14px", fontWeight: 600, color: "#1B2A4A" },
-  adminScore: { fontFamily: "'IBM Plex Mono', monospace", fontSize: "13px", color: "#1B2A4A" },
-  adminPct: { color: "#8A7F6A" },
-  adminNote: { marginTop: "18px", fontSize: "11px", lineHeight: 1.5, color: "#6E7FA0" },
-};
-
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<CarnetTerrain />);
+  var root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(h(CarnetTerrain));
+})();
 </script>
 </body>
 </html>
